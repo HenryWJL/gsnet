@@ -23,7 +23,13 @@ Get the code.
 git clone https://github.com/graspnet/graspness_unofficial.git
 cd graspness_unofficial
 ```
-Install packages via Pip.
+Install torch.
+[PyTorch](https://pytorch.org/get-started/previous-versions/)
+Install MinkowskiEngine.
+```bash
+pip install -U git+https://github.com/NVIDIA/MinkowskiEngine --no-deps
+```
+Install extra packages.
 ```bash
 pip install -r requirements.txt
 ```
