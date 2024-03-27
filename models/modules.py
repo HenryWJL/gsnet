@@ -14,6 +14,7 @@ from loss_utils import generate_grasp_views, batch_viewpoint_params_to_matrix
 
 
 class GraspableNet(nn.Module):
+    """Output objectness scores and pointwise graspness score"""
     def __init__(self, seed_feature_dim):
         super().__init__()
         self.in_dim = seed_feature_dim
@@ -21,8 +22,8 @@ class GraspableNet(nn.Module):
 
     def forward(self, seed_features, end_points):
         graspable_score = self.conv_graspable(seed_features)  # (B, 3, num_seed)
-        end_points['objectness_score'] = graspable_score[:, :2]
-        end_points['graspness_score'] = graspable_score[:, 2]
+        end_points['objectness_score'] = graspable_score[:, :2]  # (B, 2, num_seed)
+        end_points['graspness_score'] = graspable_score[:, 2]  # (B, 1, num_seed)
         return end_points
 
 
@@ -36,6 +37,14 @@ class ApproachNet(nn.Module):
         self.conv2 = nn.Conv1d(self.in_dim, self.num_view, 1)
 
     def forward(self, seed_features, end_points):
+        """
+        Returns:
+            end_points['view_score'] (B, num_seed, num_view)
+            end_points['grasp_top_view_inds'] (B, num_seed)
+            if not training:
+                end_points['grasp_top_view_xyz'] (B, num_seed, 3)
+                end_points['grasp_top_view_rot'] (B, num_seed, 3, 3)
+        """
         B, _, num_seed = seed_features.size()
         res_features = F.relu(self.conv1(seed_features), inplace=True)
         features = self.conv2(res_features)
@@ -56,6 +65,7 @@ class ApproachNet(nn.Module):
                 top_view_inds_batch = torch.multinomial(view_score_[i], 1, replacement=False)
                 top_view_inds.append(top_view_inds_batch)
             top_view_inds = torch.stack(top_view_inds, dim=0).squeeze(-1)  # B, num_seed
+        
         else:
             _, top_view_inds = torch.max(view_score, dim=2)  # (B, num_seed)
 
@@ -74,6 +84,7 @@ class ApproachNet(nn.Module):
 
 
 class CloudCrop(nn.Module):
+    """Cylinder grouping"""
     def __init__(self, nsample, seed_feature_dim, cylinder_radius=0.05, hmin=-0.02, hmax=0.04):
         super().__init__()
         self.nsample = nsample
@@ -95,6 +106,7 @@ class CloudCrop(nn.Module):
 
 
 class SWADNet(nn.Module):
+    """Output grasp quality scores and gripper widths"""
     def __init__(self, num_angle, num_depth):
         super().__init__()
         self.num_angle = num_angle
@@ -104,6 +116,11 @@ class SWADNet(nn.Module):
         self.conv_swad = nn.Conv1d(256, 2*num_angle*num_depth, 1)
 
     def forward(self, vp_features, end_points):
+        """
+        Returns:
+            end_points['grasp_score_pred'] (B, num_seed, num_angle, num_depth)
+            end_points['grasp_width_pred'] (B, num_seed, num_angle, num_depth)
+        """
         B, _, num_seed = vp_features.size()
         vp_features = F.relu(self.conv1(vp_features), inplace=True)
         vp_features = self.conv_swad(vp_features)
@@ -113,4 +130,5 @@ class SWADNet(nn.Module):
         # split prediction
         end_points['grasp_score_pred'] = vp_features[:, 0]  # B * num_seed * num angle * num_depth
         end_points['grasp_width_pred'] = vp_features[:, 1]
+        
         return end_points

@@ -1,17 +1,18 @@
+import torch
 import numpy as np
 import os
+import argparse
 from PIL import Image
 import scipy.io as scio
 import sys
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(ROOT_DIR)
-from utils.data_utils import get_workspace_mask, CameraInfo, create_point_cloud_from_depth_image
-from knn.knn_modules import knn
-import torch
 from graspnetAPI.utils.xmlhandler import xmlReader
 from graspnetAPI.utils.utils import get_obj_pose_list, transform_points
-import argparse
 
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(ROOT_DIR)
+
+from utils.data_utils import get_workspace_mask, CameraInfo, create_point_cloud_from_depth_image
+from utils.knn_utils import knn
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset_root', default=None, required=True)
@@ -27,7 +28,7 @@ if __name__ == '__main__':
     num_views, num_angles, num_depths = 300, 12, 4
     fric_coef_thresh = 0.8
     point_grasp_num = num_views * num_angles * num_depths
-    for scene_id in range(100):
+    for scene_id in range(2, 100):
         save_path = os.path.join(save_path_root, 'scene_' + str(scene_id).zfill(4), camera_type)
         if not os.path.exists(save_path):
             os.makedirs(save_path)
@@ -109,7 +110,7 @@ if __name__ == '__main__':
                     cloud_masked_partial = cloud_masked[10000 * (i - 1):(i * 10000)]
                 cloud_masked_partial = torch.from_numpy(cloud_masked_partial).cuda()
                 cloud_masked_partial = cloud_masked_partial.transpose(0, 1).contiguous().unsqueeze(0)
-                nn_inds = knn(grasp_points, cloud_masked_partial, k=1).squeeze() - 1
+                nn_inds = knn(grasp_points, cloud_masked_partial, k=1).squeeze() # - 1
                 cloud_masked_graspness[10000 * (i - 1):(i * 10000)] = torch.index_select(
                     grasp_points_graspness, 0, nn_inds).cpu().numpy()
 

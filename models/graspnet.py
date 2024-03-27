@@ -19,6 +19,37 @@ from loss_utils import GRASP_MAX_WIDTH, NUM_VIEW, NUM_ANGLE, NUM_DEPTH, GRASPNES
 from label_generation import process_grasp_labels, match_grasp_view_and_label, batch_viewpoint_params_to_matrix
 from pointnet2.pointnet2_utils import furthest_point_sample, gather_operation
 
+"""
+end_points = {
+    'point_clouds': the input point cloud (B, point_num, 3)
+    
+    'coors'
+    
+    'feats'
+    
+    'quantize2original'
+    
+    'objectness_score': one-hot encoding format of objectness (B, 2, point_num)
+    
+    'graspness_score': point-wise graspness (B, 1, point_num)
+    
+    'xyz_graspable': sampled points after graspable fps (B, sample_num, 3)
+    
+    'graspable_count_stage1': batches with graspable points / total batches
+    
+    'view_score': view-wise graspness (B, sample_num, num_view)
+    
+    'grasp_top_view_inds': indices of the highest view-wise graspness (B, sample_num)
+    
+    'grasp_top_view_xyz': xyz of the highest view-wise graspness (B, sample_num, 3)
+    
+    'grasp_top_view_rot': rotations of the highest view-wise graspness (B, sample_num, 3, 3)
+    
+    'grasp_score_pred': grasp quality scores (B, sample_num, num_angle, num_depth)
+    
+    'grasp_width_pred': gripper widths (B, sample_num, num_angle, num_depth)
+}
+"""
 
 class GraspNet(nn.Module):
     def __init__(self, cylinder_radius=0.05, seed_feat_dim=512, is_training=True):
@@ -39,55 +70,64 @@ class GraspNet(nn.Module):
     def forward(self, end_points):
         seed_xyz = end_points['point_clouds']  # use all sampled point cloud, B*Ns*3
         B, point_num, _ = seed_xyz.shape  # batch _size
-        # point-wise features
+        ### get point-wise features
         coordinates_batch = end_points['coors']
         features_batch = end_points['feats']
         mink_input = ME.SparseTensor(features_batch, coordinates=coordinates_batch)
+        ### get point-wise features
+        """possible place for distillation"""
         seed_features = self.backbone(mink_input).F
-        seed_features = seed_features[end_points['quantize2original']].view(B, point_num, -1).transpose(1, 2)
-
+        seed_features = seed_features[end_points['quantize2original']].view(B, point_num, -1).transpose(1, 2) # (B, feat_dim, point_num)
+        ### get objectness scores and point-wise graspness scores
         end_points = self.graspable(seed_features, end_points)
-        seed_features_flipped = seed_features.transpose(1, 2)  # B*Ns*feat_dim
-        objectness_score = end_points['objectness_score']
-        graspness_score = end_points['graspness_score'].squeeze(1)
-        objectness_pred = torch.argmax(objectness_score, 1)
-        objectness_mask = (objectness_pred == 1)
-        graspness_mask = graspness_score > GRASPNESS_THRESHOLD
-        graspable_mask = objectness_mask & graspness_mask
-
+        seed_features_flipped = seed_features.transpose(1, 2)  # (B, point_num, feat_dim)
+        objectness_score = end_points['objectness_score']  # (B, 2, point_num)
+        graspness_score = end_points['graspness_score'].squeeze(1)  # (B, point_num)
+        objectness_pred = torch.argmax(objectness_score, 1)  # (B, point_num), consisting of 0 or 1
+        objectness_mask = (objectness_pred == 1)  # mask non-object points (B, point_num)
+        graspness_mask = graspness_score > GRASPNESS_THRESHOLD  # mask points with graspness <= threshold (B, point_num)
+        graspable_mask = objectness_mask & graspness_mask  # preserve points with both objectness and graspness, and mask the rest
+        ### graspable fps
         seed_features_graspable = []
         seed_xyz_graspable = []
         graspable_num_batch = 0.
         for i in range(B):
             cur_mask = graspable_mask[i]
-            graspable_num_batch += cur_mask.sum()
-            cur_feat = seed_features_flipped[i][cur_mask]  # Ns*feat_dim
-            cur_seed_xyz = seed_xyz[i][cur_mask]  # Ns*3
-
-            cur_seed_xyz = cur_seed_xyz.unsqueeze(0) # 1*Ns*3
+            graspable_num_batch += cur_mask.sum()  # at least one point is graspable
+            ### get graspable points and features
+            cur_feat = seed_features_flipped[i][cur_mask]  # (point_num, feat_dim)
+            cur_seed_xyz = seed_xyz[i][cur_mask]  # (point_num, 3)
+            cur_seed_xyz = cur_seed_xyz.unsqueeze(0) # (1, point_num, 3)
+            ### fps
             fps_idxs = furthest_point_sample(cur_seed_xyz, self.M_points)
-            cur_seed_xyz_flipped = cur_seed_xyz.transpose(1, 2).contiguous()  # 1*3*Ns
-            cur_seed_xyz = gather_operation(cur_seed_xyz_flipped, fps_idxs).transpose(1, 2).squeeze(0).contiguous() # Ns*3
-            cur_feat_flipped = cur_feat.unsqueeze(0).transpose(1, 2).contiguous()  # 1*feat_dim*Ns
-            cur_feat = gather_operation(cur_feat_flipped, fps_idxs).squeeze(0).contiguous() # feat_dim*Ns
+            cur_seed_xyz_flipped = cur_seed_xyz.transpose(1, 2).contiguous()  # (1, 3, point_num)
+            cur_seed_xyz = gather_operation(cur_seed_xyz_flipped, fps_idxs).transpose(1, 2).squeeze(0).contiguous() # (sample_num, 3)
+            cur_feat_flipped = cur_feat.unsqueeze(0).transpose(1, 2).contiguous()  # (1, feat_dim, point_num)
+            cur_feat = gather_operation(cur_feat_flipped, fps_idxs).squeeze(0).contiguous() # (feat_dim, sample_num)
 
             seed_features_graspable.append(cur_feat)
             seed_xyz_graspable.append(cur_seed_xyz)
-        seed_xyz_graspable = torch.stack(seed_xyz_graspable, 0)  # B*Ns*3
-        seed_features_graspable = torch.stack(seed_features_graspable)  # B*feat_dim*Ns
+            
+        seed_xyz_graspable = torch.stack(seed_xyz_graspable, 0)  # (B, sample_num, 3)
+        seed_features_graspable = torch.stack(seed_features_graspable)  # (B, feat_dim, sample_num)
         end_points['xyz_graspable'] = seed_xyz_graspable
         end_points['graspable_count_stage1'] = graspable_num_batch / B
-
+        ### get view-wise graspness
         end_points, res_feat = self.rotation(seed_features_graspable, end_points)
+        ### get graspable features (point-wise graspable + view-wise graspable)
         seed_features_graspable = seed_features_graspable + res_feat
 
+        ### TODO
         if self.is_training:
             end_points = process_grasp_labels(end_points)
             grasp_top_views_rot, end_points = match_grasp_view_and_label(end_points)
+            
         else:
             grasp_top_views_rot = end_points['grasp_top_view_rot']
 
+        ### cylinder grouping
         group_features = self.crop(seed_xyz_graspable.contiguous(), seed_features_graspable.contiguous(), grasp_top_views_rot)
+        ### generate grasp quality scores and gripper widths
         end_points = self.swad(group_features, end_points)
 
         return end_points
@@ -120,4 +160,5 @@ def pred_decode(end_points):
         obj_ids = -1 * torch.ones_like(grasp_score)
         grasp_preds.append(
             torch.cat([grasp_score, grasp_width, grasp_height, grasp_depth, grasp_rot, grasp_center, obj_ids], axis=-1))
+    
     return grasp_preds

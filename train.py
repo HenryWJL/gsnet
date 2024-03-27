@@ -25,13 +25,18 @@ parser.add_argument('--camera', default='kinect', help='Camera split [realsense/
 parser.add_argument('--checkpoint_path', help='Model checkpoint path', default=None)
 parser.add_argument('--model_name', type=str, default=None)
 parser.add_argument('--log_dir', default='logs/log')
-parser.add_argument('--num_point', type=int, default=15000, help='Point Number [default: 20000]')
+parser.add_argument('--num_point', type=int, default=15000, help='Number of input points')
 parser.add_argument('--seed_feat_dim', default=512, type=int, help='Point wise feature dim')
 parser.add_argument('--voxel_size', type=float, default=0.005, help='Voxel Size to process point clouds ')
-parser.add_argument('--max_epoch', type=int, default=10, help='Epoch to run [default: 18]')
-parser.add_argument('--batch_size', type=int, default=4, help='Batch Size during training [default: 2]')
-parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate [default: 0.001]')
+parser.add_argument('--max_epoch', type=int, default=10, help='Epoch to run')
+parser.add_argument('--batch_size', type=int, default=4, help='Batch Size during training')
+parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate')
 parser.add_argument('--resume', action='store_true', default=False, help='Whether to resume from checkpoint')
+
+"""
+Modify the number of sampled points in "loss_utils.py"
+"""
+
 cfgs = parser.parse_args()
 # ------------------------------------------------------------------------- GLOBAL CONFIG BEG
 EPOCH_CNT = 0
@@ -65,6 +70,7 @@ TRAIN_DATALOADER = DataLoader(TRAIN_DATASET, batch_size=cfgs.batch_size, shuffle
 print('train dataloader length: ', len(TRAIN_DATALOADER))
 
 net = GraspNet(seed_feat_dim=cfgs.seed_feat_dim, is_training=True)
+### choose device
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 net.to(device)
 # Load the Adam optimizer
